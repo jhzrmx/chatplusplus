@@ -60,7 +60,9 @@ than your device.
 1. **Models** tab: tap **Add model (.gguf)**, pick a file with the system file picker. It is copied to
    `Android/data/com.jhz.llamachatplusplus/files/models/`.
 2. Tap **Load**. Status shows "Loading..." and then the server address.
-3. **Server** tab: the llama.cpp web UI opens automatically once the model is ready.
+3. **Server** tab: the llama.cpp web UI opens automatically once the model is ready. File uploads
+   (attachments, imports) use the system file picker, and downloads (e.g. exporting a conversation)
+   ask where to save via the system "save as" dialog. Neither needs a storage permission.
 4. **Settings** tab: serve on the local network (0.0.0.0) or localhost only, port, context size, CPU
    threads, optional API key. Changes apply the next time a model is loaded.
 

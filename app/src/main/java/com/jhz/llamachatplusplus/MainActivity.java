@@ -2,6 +2,7 @@ package com.jhz.llamachatplusplus;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -9,6 +10,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Bitmap;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
@@ -18,6 +20,12 @@ import android.provider.OpenableColumns;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.util.Base64;
+import android.webkit.DownloadListener;
+import android.webkit.JavascriptInterface;
+import android.webkit.URLUtil;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -37,9 +45,12 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.FileOutputStream;
+import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
+import java.net.URL;
+import java.net.URLDecoder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -52,6 +63,18 @@ public class MainActivity extends Activity implements ServerService.Listener {
 
     private static final int REQ_PICK_MODEL = 100;
     private static final int REQ_NOTIF = 101;
+    private static final int REQ_FILE_CHOOSER = 102;
+    private static final int REQ_SAVE_DOC = 103;
+
+    /** Keeps Blob references (so blob: downloads survive revokeObjectURL) and remembers the download filename. */
+    private static final String HOOK_JS = "(function(){if(window.__chatppHook)return;window.__chatppHook=1;"
+            + "window.__blobs={};var oc=URL.createObjectURL;"
+            + "URL.createObjectURL=function(b){var u=oc.call(URL,b);window.__blobs[u]=b;return u;};"
+            + "var orv=URL.revokeObjectURL;"
+            + "URL.revokeObjectURL=function(u){setTimeout(function(){delete window.__blobs[u];},30000);return orv.call(URL,u);};"
+            + "var ac=HTMLAnchorElement.prototype.click;"
+            + "HTMLAnchorElement.prototype.click=function(){if(this.download)window.__lastDl=this.download;"
+            + "return ac.apply(this,arguments);};})();";
     private static final int COLOR_ACTIVE = 0xFF80CBC4;
     private static final int COLOR_INACTIVE = 0xFF9E9E9E;
 
@@ -67,6 +90,10 @@ public class MainActivity extends Activity implements ServerService.Listener {
     private EditText portEdit, ctxEdit, threadsEdit, keyEdit;
     private ModelAdapter adapter;
     private String webLoadedUrl;
+
+    private ValueCallback<Uri[]> fileCallback;
+    private byte[] pendingBytes;
+    private String pendingUrl;
 
     private volatile boolean cancelCopy;
     private boolean copying;
@@ -116,7 +143,50 @@ public class MainActivity extends Activity implements ServerService.Listener {
         WebSettings ws = webView.getSettings();
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
-        webView.setWebViewClient(new WebViewClient());
+        webView.addJavascriptInterface(new WebBridge(), "ChatBridge");
+        webView.setWebViewClient(new WebViewClient() {
+            @Override public void onPageStarted(WebView v, String url, Bitmap icon) {
+                super.onPageStarted(v, url, icon);
+                v.evaluateJavascript(HOOK_JS, null);
+            }
+
+            @Override public void onPageFinished(WebView v, String url) {
+                super.onPageFinished(v, url);
+                v.evaluateJavascript(HOOK_JS, null);
+            }
+
+            @Override public boolean shouldOverrideUrlLoading(WebView v, String url) {
+                if (url.startsWith("http://127.0.0.1:") || url.startsWith("about:")
+                        || url.startsWith("blob:") || url.startsWith("data:")) {
+                    return false;
+                }
+                try { // external links open in the browser, not inside the server UI
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                } catch (ActivityNotFoundException ignored) { }
+                return true;
+            }
+        });
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onShowFileChooser(WebView w, ValueCallback<Uri[]> cb,
+                                                       FileChooserParams params) {
+                if (fileCallback != null) fileCallback.onReceiveValue(null);
+                fileCallback = cb;
+                try {
+                    startActivityForResult(params.createIntent(), REQ_FILE_CHOOSER);
+                } catch (ActivityNotFoundException e) {
+                    fileCallback = null;
+                    toast("No file picker available");
+                    return false;
+                }
+                return true;
+            }
+        });
+        webView.setDownloadListener(new DownloadListener() {
+            @Override public void onDownloadStart(String url, String userAgent, String contentDisposition,
+                                                  String mime, long length) {
+                handleDownload(url, contentDisposition, mime);
+            }
+        });
 
         loadSettingsToUi();
         switchExpose.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
@@ -145,6 +215,10 @@ public class MainActivity extends Activity implements ServerService.Listener {
     }
 
     @Override protected void onDestroy() {
+        if (fileCallback != null) {
+            fileCallback.onReceiveValue(null);
+            fileCallback = null;
+        }
         webView.destroy();
         super.onDestroy();
     }
@@ -349,6 +423,17 @@ public class MainActivity extends Activity implements ServerService.Listener {
 
     @Override protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_FILE_CHOOSER) {
+            if (fileCallback != null) {
+                fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res, data));
+                fileCallback = null;
+            }
+            return;
+        }
+        if (req == REQ_SAVE_DOC) {
+            finishSave(res, data);
+            return;
+        }
         if (req == REQ_PICK_MODEL && res == RESULT_OK && data != null && data.getData() != null) {
             importModel(data.getData());
         }
@@ -470,6 +555,118 @@ public class MainActivity extends Activity implements ServerService.Listener {
                 }
             }
         });
+    }
+
+    // ------------------------------------------------------------ web downloads (SAF, no permissions)
+
+    private void handleDownload(String url, String contentDisposition, String mime) {
+        if (mime == null || mime.length() == 0) mime = "application/octet-stream";
+        if (url.startsWith("blob:")) {
+            // Blobs only exist inside the page: read it there and hand the bytes to ChatBridge.
+            webView.evaluateJavascript("(function(){var u=" + org.json.JSONObject.quote(url)
+                    + ";var b=window.__blobs&&window.__blobs[u];"
+                    + "function send(b){var r=new FileReader();r.onload=function(){var s=r.result;"
+                    + "ChatBridge.save(window.__lastDl||'',b.type||'',s.substring(s.indexOf(',')+1));"
+                    + "window.__lastDl='';};r.readAsDataURL(b);}"
+                    + "if(b){send(b);}else{fetch(u).then(function(x){return x.blob();}).then(send);}})()", null);
+        } else if (url.startsWith("data:")) {
+            try {
+                int comma = url.indexOf(',');
+                String header = url.substring(5, comma);
+                String payload = url.substring(comma + 1);
+                byte[] bytes = header.endsWith(";base64")
+                        ? Base64.decode(payload, Base64.DEFAULT)
+                        : URLDecoder.decode(payload, "UTF-8").getBytes("UTF-8");
+                int semi = header.indexOf(';');
+                String m = semi > 0 ? header.substring(0, semi) : header;
+                startSave(URLUtil.guessFileName(url, contentDisposition, m), m.length() > 0 ? m : mime, bytes, null);
+            } catch (Exception e) {
+                toast("Download failed");
+            }
+        } else if (url.startsWith("http://") || url.startsWith("https://")) {
+            startSave(URLUtil.guessFileName(url, contentDisposition, mime), mime, null, url);
+        }
+    }
+
+    /** Asks the user where to save (SAF create-document), then writes in finishSave(). */
+    private void startSave(String name, String mime, byte[] bytes, String url) {
+        pendingBytes = bytes;
+        pendingUrl = url;
+        if (name == null || name.length() == 0) name = "download";
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType(mime == null || mime.length() == 0 ? "application/octet-stream" : mime);
+        i.putExtra(Intent.EXTRA_TITLE, name.replace('/', '_'));
+        try {
+            startActivityForResult(i, REQ_SAVE_DOC);
+        } catch (ActivityNotFoundException e) {
+            pendingBytes = null;
+            pendingUrl = null;
+            toast("No file picker available");
+        }
+    }
+
+    private void finishSave(int res, Intent data) {
+        final byte[] bytes = pendingBytes;
+        final String url = pendingUrl;
+        pendingBytes = null;
+        pendingUrl = null;
+        if (res != RESULT_OK || data == null || data.getData() == null) return;
+        final Uri dest = data.getData();
+        final String key = Prefs.apiKey(this);
+        toast("Saving…");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                String msg = "Saved";
+                OutputStream out = null;
+                InputStream in = null;
+                HttpURLConnection c = null;
+                try {
+                    out = getContentResolver().openOutputStream(dest, "w");
+                    if (out == null) throw new IOException("Cannot write file");
+                    if (bytes != null) {
+                        out.write(bytes);
+                    } else if (url != null) {
+                        c = (HttpURLConnection) new URL(url).openConnection();
+                        if (key.length() > 0) c.setRequestProperty("Authorization", "Bearer " + key);
+                        in = c.getInputStream();
+                        byte[] buf = new byte[64 * 1024];
+                        int n;
+                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    }
+                } catch (IOException e) {
+                    msg = "Save failed: " + e.getMessage();
+                } finally {
+                    try { if (in != null) in.close(); } catch (IOException ignored) { }
+                    try { if (out != null) out.close(); } catch (IOException ignored) { }
+                    if (c != null) c.disconnect();
+                }
+                final String m = msg;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() { toast(m); }
+                });
+            }
+        }, "save").start();
+    }
+
+    /** Called from the page's JavaScript (see handleDownload). */
+    private class WebBridge {
+        @JavascriptInterface
+        public void save(final String name, final String mime, String base64) {
+            final byte[] bytes;
+            try {
+                bytes = Base64.decode(base64, Base64.DEFAULT);
+            } catch (IllegalArgumentException e) {
+                return;
+            }
+            runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    String n = name;
+                    if (n == null || n.length() == 0) n = URLUtil.guessFileName("blob", null, mime);
+                    startSave(n, mime, bytes, null);
+                }
+            });
+        }
     }
 
     // ------------------------------------------------------------ helpers
