@@ -1,0 +1,8 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+tools/llama.cpp/
+tools/build/
+app/src/main/jniLibs/*/libllama_server.so
