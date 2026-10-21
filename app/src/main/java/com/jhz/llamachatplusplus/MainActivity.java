@@ -25,7 +25,9 @@ import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
+import android.webkit.WebBackForwardList;
 import android.webkit.WebChromeClient;
+import android.webkit.WebHistoryItem;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -224,11 +226,24 @@ public class MainActivity extends Activity implements ServerService.Listener {
     }
 
     @Override public void onBackPressed() {
-        if (currentTab == 1 && webView.canGoBack()) {
+        if (currentTab == 1 && canGoBackInWebView()) {
             webView.goBack();
         } else {
             super.onBackPressed();
         }
+    }
+
+    /**
+     * True only if there is a real page to go back to. Unloading a model loads about:blank into
+     * the WebView, which leaves history entries behind; those must not swallow the back press.
+     */
+    private boolean canGoBackInWebView() {
+        if (ServerService.getState() != ServerService.RUNNING || webLoadedUrl == null) return false;
+        WebBackForwardList history = webView.copyBackForwardList();
+        int cur = history.getCurrentIndex();
+        if (cur <= 0) return false;
+        WebHistoryItem prev = history.getItemAtIndex(cur - 1);
+        return prev != null && prev.getUrl() != null && !prev.getUrl().startsWith("about:");
     }
 
     // ------------------------------------------------------------ tabs
