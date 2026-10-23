@@ -17,7 +17,11 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.StatFs;
 import android.provider.OpenableColumns;
+import android.text.Html;
+import android.text.method.LinkMovementMethod;
 import android.view.LayoutInflater;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.util.Base64;
@@ -244,6 +248,68 @@ public class MainActivity extends Activity implements ServerService.Listener {
         if (cur <= 0) return false;
         WebHistoryItem prev = history.getItemAtIndex(cur - 1);
         return prev != null && prev.getUrl() != null && !prev.getUrl().startsWith("about:");
+    }
+
+    // ------------------------------------------------------------ menu / about
+
+    @Override public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.main_menu, menu);
+        MenuItem info = menu.findItem(R.id.menu_info);
+        info.setOnMenuItemClickListener(new MenuItem.OnMenuItemClickListener() {
+            @Override public boolean onMenuItemClick(MenuItem item) {
+                showAbout();
+                return true;
+            }
+        });
+        return true;
+    }
+
+    private static final String ABOUT_BODY =
+            "Turn your phone into a private, offline Llama server. Chat++ runs llama.cpp on your device "
+            + "so you can chat with GGUF language models without internet access or a cloud account.<br><br>"
+            + "<b>What it does</b><br>"
+            + "&#8226; Import and manage .gguf models<br>"
+            + "&#8226; Load / unload a model with one tap<br>"
+            + "&#8226; Built-in llama.cpp web UI<br>"
+            + "&#8226; Optionally share the server on your local network<br><br>"
+            + "<b>Developed by</b><br>"
+            + "<a href=\"https://github.com/jhzrmx\">JHZRMX</a><br><br>"
+            + "<b>License</b><br>"
+            + "Chat++ is open source under the "
+            + "<a href=\"https://github.com/jhzrmx/chatplusplus/blob/HEAD/LICENSE\">MIT License</a>.<br>"
+            + "Source code: <a href=\"https://github.com/jhzrmx/chatplusplus\">github.com/jhzrmx/chatplusplus</a><br><br>"
+            + "<b>Powered by</b><br>"
+            + "&#8226; <a href=\"https://github.com/ggml-org/llama.cpp\">llama.cpp</a> (server and web UI), MIT License: "
+            + "<a href=\"https://github.com/ggml-org/llama.cpp/blob/master/LICENSE\">license</a><br>"
+            + "&#8226; <a href=\"https://github.com/ggml-org/ggml\">ggml</a> and the GGUF format, MIT License: "
+            + "<a href=\"https://github.com/ggml-org/ggml/blob/master/LICENSE\">license</a><br>"
+            + "&#8226; <a href=\"https://huggingface.co/models?library=gguf\">Hugging Face</a> for finding GGUF models<br><br>"
+            + "<b>Model licenses</b><br>"
+            + "Every model has its own license and terms of use. Check the model page before using or sharing a model.";
+
+    private void showAbout() {
+        String version = "";
+        try {
+            version = "Version " + getPackageManager().getPackageInfo(getPackageName(), 0).versionName + "<br><br>";
+        } catch (PackageManager.NameNotFoundException ignored) { }
+
+        TextView tv = new TextView(this);
+        tv.setText(Html.fromHtml(version + ABOUT_BODY, Html.FROM_HTML_MODE_LEGACY));
+        tv.setMovementMethod(LinkMovementMethod.getInstance());
+        tv.setTextColor(0xFFE0E0E0);
+        tv.setLinkTextColor(COLOR_ACTIVE);
+        int pad = (int) (20 * getResources().getDisplayMetrics().density);
+        tv.setPadding(pad, pad / 2, pad, 0);
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+
+        new AlertDialog.Builder(this)
+                .setIcon(R.drawable.ic_launcher)
+                .setTitle("About " + getString(R.string.app_name))
+                .setView(sv)
+                .setCancelable(true)
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     // ------------------------------------------------------------ tabs

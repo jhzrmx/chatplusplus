@@ -87,3 +87,7 @@ real file path and SAF only provides `content://` URIs, so models are copied int
 ## Roadmap
 
 - Hugging Face download as another model source writing into the same models folder.
+
+## License
+
+MIT, see [LICENSE](LICENSE). llama.cpp and ggml (bundled via the build script) are also MIT-licensed; models have their own licenses.
